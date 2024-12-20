@@ -8,7 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { v4 as UUID } from 'uuid';
 import yaml from 'yaml';
-import colors from 'yoctocolors';
+import { red, green, yellow, blue, gray } from 'yoctocolors';
+import clockit from 'clockit';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,7 +20,8 @@ Handlebars.registerHelper('$guid', UUID);
 
 program
   .version(thisPackage.version)
-  .description('A CLI tool to load and parse a YAML file')
+  .description('A CLI tool to execute a sequence of linked HTTP requests defined in a YAML file')
+  .option('-v, --verbose', 'print additional details')
   .argument('<file>', 'path to the YAML file')
   .action(load);
 
@@ -30,11 +32,11 @@ function inspect(obj) {
 }
 
 function abort(message) {
-  console.error(colors.red(message));
+  console.error(red(message));
   process.exit(1);
 }
 
-async function load(file) {
+async function load(file, options) {
   let doc;
   try {
     const data = fs.readFileSync(file, 'utf8');
@@ -44,20 +46,20 @@ async function load(file) {
   }
 
   try {
-    await exec(doc);
+    await exec(doc, options);
   } catch (e) {
     abort(`Error: ${e.message}`);
   }
 }
 
-async function exec(doc) {
+async function exec(doc, options) {
   const variables = doc.variables || {};
 
   const interpolate = s => s && Handlebars.compile(s)(variables);
 
   const actions = doc.actions || [];
   for (const action of actions) {
-    console.log(colors.green(action.name));
+    console.log(green(action.name));
 
     const url = interpolate(action.url);
     const body = interpolate(action.body);
@@ -67,7 +69,12 @@ async function exec(doc) {
       headers[h] = interpolate(headers[h]);
     }
 
-    console.log('Request:', colors.yellow(action.method), colors.blue(url), '\n', body);
+    console.log('>', yellow(action.method), blue(url));
+    if (options.verbose) {
+      console.log(headers);
+      body && console.log(body);
+    }
+    const timer = clockit.start();
     const response = await axios({
       method: action.method,
       url: url,
@@ -78,19 +85,31 @@ async function exec(doc) {
       }
     });
     variables.response = response;
-    console.log('Response:', response.status, '\n', inspect(response.data));
+    console.log(`< ${yellow(response.status)} ${gray(`${timer.ms.toFixed(0)}ms`)}`);
+    if (options.verbose) {
+      console.log(response.headers);
+      console.log(inspect(response.data));
+    }
 
     for (const key in action.capture) {
-      variables[key] = eval(action.capture[key]);
+      const expr = action.capture[key];
+      try {
+        variables[key] = eval(expr);
+      } catch (e) {
+        abort(`Error evaluating capture "${expr}": ${e.message}`);
+      }
     }
 
     for (const assertion of action.assert) {
-      const result = eval(assertion);
-      if (!result) {
-        abort(`Assertion failed: ${assertion}`);
+      try {
+        if (!eval(assertion)) {
+          abort(`Assertion failed: ${assertion}`);
+        }
+      } catch (e) {
+        abort(`Error evaluating assert "${assertion}": ${e.message}`);
       }
     }
   }
 
-  console.log(colors.green('Done'));
+  console.log(green('Done'));
 }
