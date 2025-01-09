@@ -53,7 +53,13 @@ async function load(file, options) {
 }
 
 async function exec(doc, options) {
-  const variables = doc.variables || {};
+  const variables = { ...doc.variables };
+
+  for (const key in variables) {
+    if (process.env[key]) {
+      variables[key] = process.env[key];
+    }
+  }
 
   const interpolate = s => s && Handlebars.compile(s)(variables);
 
